@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#      _  __                      
+#   __| |/ _|___ _   _ _ __   ___ 
+#  / _` | |_/ __| | | | '_ \ / __|
+# | (_| |  _\__ \ |_| | | | | (__ 
+#  \__,_|_| |___/\__, |_| |_|\___|
+#                |___/
+#
+# A quick and dirty (really dirty) sync script for Dwarf Fortress
+#
+# This script requires some initial setup for each machine that has DF on it.
+# The remote machine needs to be running ssh, and both machines need to have
+# a ".df" symlink in the user's home director that points to the DF dir, so
+# that all savegames are located in "$HOME/.df/save". If you need to override
+# this default, you can edit the .dfsyncrc in your home directory.
+#
+# Two arguments are required:
+#   1. a hostname of another machine to sync from
+#   2. a directory name of the savegame within the save folder, such as
+#      "region2" or "current"
+#
+# Before doing anything, the script will show you the modification dates of
+# both the local and remote savegames, so you can choose if you wish to sync
+# or not.
+#
+# When you sync the remote savegame to your local host, it will keep the same
+# folder name, and back up anything that currently exists with that name.
+# Afterward you will have the option of deleting or keeping the backup.
+
+if [ -z $1 ] || [ -z $2 ]; then
+    echo "Usage: $(basename $0) <hostname> <save_folder>"
+    exit 1
+fi
+
+host_name=$1
+folder=$2
+
+rsync_chk=$(which rsync)
+if [ ! -x $rsync_chk ]; then
+    echo 'rsync not installed! Exiting.'
+    exit 1
+fi
+
+if [ ! -f "$HOME/.dfsyncrc" ]; then
+    echo 'df_dir="$HOME/.df/save"' > "$HOME/.dfsyncrc"
+    echo 'df_remote_dir="$df_dir"' >> "$HOME/.dfsyncrc"
+fi
+
+source "$HOME/.dfsyncrc"
+
+if [ -d $df_dir/$folder ]; then
+    echo "'$folder' exists! Comparing timestamps..."
+    remote=$(rsync -vzhe ssh "$host_name:$df_remote_dir/$folder/world.sav")
+    remote=$(echo "$remote" | sed -n '2{p;q}' \
+        | awk '{ printf "%s %s\n", $3, $4 }')
+    printf "%s's $folder/world.sav:\n\t%s\n" "$host_name" "$remote"
+    printf "local $folder/world.sav:\n\t"
+    echo $(rsync -vzh $df_dir/$folder/world.sav) \
+        | awk '{ printf "%s %s\n", $8, $9 }'
+    echo ''
+    echo -n "Do you want to sync '$folder'? [Y/n] "
+    read yesno
+
+    case "$yesno" in
+        N* | n* )
+            exit
+            ;;
+    esac
+
+    printf "Backing up '%s' to '%s.bak'..." $folder $folder
+    mv $df_dir/$folder $df_dir/$folder.bak
+    printf " Done!\n"
+fi
+
+printf "Syncing save folder '%s'..." $folder
+rsync -aqzhPe ssh "$host_name:$df_remote_dir/$folder" $df_dir/
+printf " Done!\n"
+
+# On Windows the permissions are going to be fucked, on Linux lets set them
+# to something sane
+if [[ ! $(uname -r) =~ WSL2 ]]; then
+    printf "Fixing permissions on '%s'..." $folder
+    chmod o-w $df_dir/$folder
+    chmod a-x,o-w $df_dir/$folder/*
+    printf " Done!\n"
+fi
+
+if [ -d $df_dir/$folder.bak ]; then
+    echo ''
+    echo -n "Delete backup folder '$folder.bak'? [Y/n] "
+    read yesno
+    
+    case "$yesno" in
+        Y* | y* | '')
+            printf "Deleting backup folder '%s.bak'..." $folder
+            rm -rf $df_dir/$folder.bak
+            printf " Done!\n"
+            ;;
+    esac
+fi
